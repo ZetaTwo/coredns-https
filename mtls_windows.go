@@ -6,6 +6,8 @@ import (
 	"crypto/tls"
 	"fmt"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/coredns/caddy"
 	"github.com/google/certtostore"
 )
@@ -45,7 +47,28 @@ func parseTLSCertStore(c *caddy.Controller, conf *httpsConfig) (err error) {
 		return fmt.Errorf("Unknown cert store provider %s", provider)
 	}
 
-	var certStore certtostore.WinCertStorage
+	var certStore certtostore.WinCertStorage = nil
+	var certContext *windows.CertContext = nil
+
+	shutdownHandler := func() error {
+		if certContext != nil {
+			err := certtostore.FreeCertContext(certContext)
+			if err != nil {
+				return err
+			}
+			certContext = nil
+		}
+		if certStore != nil {
+			err = certStore.Close()
+			if err != nil {
+				return err
+			}
+			certStore = nil
+		}
+		return nil
+	}
+	c.OnShutdown(shutdownHandler)
+
 	if store == "user" {
 		certStore, err = certtostore.OpenWinCertStoreCurrentUser(providerArg, container, []string{issuer}, []string{intermediateIssuer}, false)
 	} else if store == "system" {
@@ -57,19 +80,17 @@ func parseTLSCertStore(c *caddy.Controller, conf *httpsConfig) (err error) {
 	if err != nil {
 		return fmt.Errorf("Failed to open certificate store: %w", err)
 	}
-	defer certStore.Close()
 
-	cert, context, err := certStore.CertWithContext()
+	cert, certContext, err := certStore.CertWithContext()
 	if err != nil {
 		return fmt.Errorf("Failed to retrieve certificate: %w", err)
 	}
-	defer certtostore.FreeCertContext(context)
 
 	if len(cert.Raw) == 0 {
 		return fmt.Errorf("Empty certificate retrieved")
 	}
 
-	key, err := certStore.CertKey(context)
+	key, err := certStore.CertKey(certContext)
 	if err != nil {
 		return fmt.Errorf("Failed to retrieve certificate key: %w", err)
 	}
